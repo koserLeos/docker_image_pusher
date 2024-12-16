@@ -8,3 +8,4 @@ youshandefeiyang/allinone:latest
 rustdesk/rustdesk-server:latest
 containrrr/watchtower:latest
 kingmo888/rustdesk-api-server:latest
+iperf3:latest
