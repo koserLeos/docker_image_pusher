@@ -9,3 +9,4 @@ rustdesk/rustdesk-server:latest
 containrrr/watchtower:latest
 kingmo888/rustdesk-api-server:latest
 networkstatic/iperf3:latest
+gouvern/iptv-api:latest
