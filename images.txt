@@ -10,5 +10,5 @@ containrrr/watchtower:latest
 kingmo888/rustdesk-api-server:latest
 networkstatic/iperf3:latest
 guovern/iptv-api:latest
-aquasec/trivy-db:2
-aquasec/trivy-java-db:1
+ghcr.io/aquasecurity/trivy-db:2
+ghcr.io/aquasecurity/trivy-java-db:1
