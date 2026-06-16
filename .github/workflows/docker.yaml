@@ -59,10 +59,11 @@ jobs:
           echo "登录阿里云镜像仓库: $ALIYUN_REGISTRY"
           echo "$ALIYUN_REGISTRY_PASSWORD" | docker login -u "$ALIYUN_REGISTRY_USER" --password-stdin "$ALIYUN_REGISTRY"
 
-          declare -A img_ns_map
-          declare -A duplicate_img
+          # 改用普通字符串记录已出现镜像名，彻底放弃关联数组键判断
+          RECORD_IMGS=""
 
-          # 第一轮扫描：标记重名镜像
+          # 第一轮：收集所有镜像短名+原始命名空间，存入临时文件替代数组
+          TMP_RECORD=$(mktemp)
           while IFS= read -r raw_line || [ -n "$raw_line" ]; do
             line=$(echo "$raw_line" | xargs)
             [[ -z "$line" || "$line" =~ ^# ]] && continue
@@ -72,21 +73,10 @@ jobs:
             img_name=$(echo "$img_short" | cut -d':' -f1)
             ns_part=$(echo "$pure_image" | sed -E 's/\/[^/]+$//')
 
-            # 修复方案：单独判断数组key，不放在 [[ ]] 内部避免解析报错
-            HAS_KEY=0
-            if [ -n "${img_ns_map[$img_name]-}" ]; then
-              HAS_KEY=1
-            fi
-            if [ $HAS_KEY -eq 1 ]; then
-              if [[ "${img_ns_map[$img_name]}" != "$ns_part" ]]; then
-                duplicate_img[$img_name]="1"
-              fi
-            else
-              img_ns_map[$img_name]="$ns_part"
-            fi
+            echo "$img_name|$ns_part" >> "$TMP_RECORD"
           done < "${{ env.IMAGE_LIST_FILE }}"
 
-          # 第二轮拉取推送
+          # 第二轮逐行处理镜像
           while IFS= read -r raw_line || [ -n "$raw_line" ]; do
             line=$(echo "$raw_line" | xargs)
             [[ -z "$line" || "$line" =~ ^# ]] && continue
@@ -106,13 +96,10 @@ jobs:
             img_name=$(echo "$img_short" | cut -d':' -f1)
             ns_part=$(echo "$pure_image" | sed -E 's/\/[^/]+$//')
 
+            # 统计同名但不同命名空间的行数，判断是否重名冲突
+            DUP_COUNT=$(grep "^${img_name}|" "$TMP_RECORD" | cut -d'|' -f2 | sort -u | wc -l)
             ns_prefix=""
-            # 同样拆分判断逻辑，彻底规避语法错误
-            HAS_DUP=0
-            if [ -n "${duplicate_img[$img_name]-}" ]; then
-              HAS_DUP=1
-            fi
-            if [ $HAS_DUP -eq 1 ] && [ -n "$ns_part" ]; then
+            if [ "$DUP_COUNT" -gt 1 ] && [ -n "$ns_part" ]; then
               ns_prefix="${ns_part//\//_}_"
             fi
 
@@ -135,4 +122,6 @@ jobs:
             df -hT
           done < "${{ env.IMAGE_LIST_FILE }}"
 
+          # 清理临时文件
+          rm -f "$TMP_RECORD"
           docker logout "$ALIYUN_REGISTRY"
