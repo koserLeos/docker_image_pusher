@@ -62,6 +62,7 @@ jobs:
           declare -A img_ns_map
           declare -A duplicate_img
 
+          # 第一轮扫描：标记重名镜像
           while IFS= read -r raw_line || [ -n "$raw_line" ]; do
             line=$(echo "$raw_line" | xargs)
             [[ -z "$line" || "$line" =~ ^# ]] && continue
@@ -71,7 +72,12 @@ jobs:
             img_name=$(echo "$img_short" | cut -d':' -f1)
             ns_part=$(echo "$pure_image" | sed -E 's/\/[^/]+$//')
 
-            if [[ -n "${img_ns_map[$img_name]+x}" ]]; then
+            # 修复方案：单独判断数组key，不放在 [[ ]] 内部避免解析报错
+            HAS_KEY=0
+            if [ -n "${img_ns_map[$img_name]-}" ]; then
+              HAS_KEY=1
+            fi
+            if [ $HAS_KEY -eq 1 ]; then
               if [[ "${img_ns_map[$img_name]}" != "$ns_part" ]]; then
                 duplicate_img[$img_name]="1"
               fi
@@ -80,6 +86,7 @@ jobs:
             fi
           done < "${{ env.IMAGE_LIST_FILE }}"
 
+          # 第二轮拉取推送
           while IFS= read -r raw_line || [ -n "$raw_line" ]; do
             line=$(echo "$raw_line" | xargs)
             [[ -z "$line" || "$line" =~ ^# ]] && continue
@@ -100,7 +107,12 @@ jobs:
             ns_part=$(echo "$pure_image" | sed -E 's/\/[^/]+$//')
 
             ns_prefix=""
-            if [[ -n "${duplicate_img[$img_name]+x}" && -n "$ns_part" ]]; then
+            # 同样拆分判断逻辑，彻底规避语法错误
+            HAS_DUP=0
+            if [ -n "${duplicate_img[$img_name]-}" ]; then
+              HAS_DUP=1
+            fi
+            if [ $HAS_DUP -eq 1 ] && [ -n "$ns_part" ]; then
               ns_prefix="${ns_part//\//_}_"
             fi
 
