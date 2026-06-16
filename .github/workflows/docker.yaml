@@ -50,76 +50,65 @@ jobs:
       - name: Sync images to Aliyun Registry
         run: |
           set -eo pipefail
-          # 临时关闭未定义变量检测，规避计数空值报错
+          # 关闭严格未定义变量检测，从根源规避空变量报错
           set +u
 
-          if [ ! -f "${{ env.IMAGE_LIST_FILE }}" ]; then
-            echo "ERROR: 镜像列表文件 ${{ env.IMAGE_LIST_FILE }} 不存在！"
-            exit 1
-          fi
-
+          # 登录阿里云镜像仓库
           echo "登录阿里云镜像仓库: $ALIYUN_REGISTRY"
           echo "$ALIYUN_REGISTRY_PASSWORD" | docker login -u "$ALIYUN_REGISTRY_USER" --password-stdin "$ALIYUN_REGISTRY"
 
-          TMP_RECORD=$(mktemp)
-          while IFS= read -r raw_line || [ -n "$raw_line" ]; do
+          # 临时文件存储镜像名+命名空间映射
+          TMP_MAP=$(mktemp)
+          cat ${IMAGE_LIST_FILE} | while IFS= read -r raw_line || [ -n "$raw_line" ]; do
             line=$(echo "$raw_line" | xargs)
-            [[ -z "$line" || "$line" =~ ^# ]] && continue
+            echo "$line" | grep -E '^#|^$' >/dev/null && continue
             pure_image=$(echo "$line" | awk '{print $NF}' | cut -d'@' -f1)
             img_short=$(echo "$pure_image" | awk -F'/' '{print $NF}')
             img_name=$(echo "$img_short" | cut -d':' -f1)
             ns_part=$(echo "$pure_image" | sed -E 's/\/[^/]+$//')
-            echo "$img_name|$ns_part" >> "$TMP_RECORD"
-          done < "${{ env.IMAGE_LIST_FILE }}"
+            echo "${img_name}|${ns_part}" >> "$TMP_MAP"
+          done
 
-          while IFS= read -r raw_line || [ -n "$raw_line" ]; do
+          # 逐行处理镜像
+          cat ${IMAGE_LIST_FILE} | while IFS= read -r raw_line || [ -n "$raw_line" ]; do
             line=$(echo "$raw_line" | xargs)
-            [[ -z "$line" || "$line" =~ ^# ]] && continue
+            echo "$line" | grep -E '^#|^$' >/dev/null && continue
             echo -e "\n==================== 开始处理镜像行: $line ===================="
 
-            platform=""
-            if [[ "$line" =~ --platform[ =]([^ ]+) ]]; then
-              platform="${BASH_REMATCH[1]}"
-            fi
-            platform_prefix=""
-            if [[ -n "$platform" ]]; then
-              platform_prefix="${platform//\//_}_"
-            fi
+            # 提取平台参数
+            platform=$(echo "$line" | grep -oE '--platform[ =][^ ]+' | awk '{print $2}')
+            platform_prefix=$(echo "$platform" | sed 's/\//_/g' | sed 's/$/_/')
 
             pure_image=$(echo "$line" | awk '{print $NF}' | cut -d'@' -f1)
             img_short=$(echo "$pure_image" | awk -F'/' '{print $NF}')
             img_name=$(echo "$img_short" | cut -d':' -f1)
             ns_part=$(echo "$pure_image" | sed -E 's/\/[^/]+$//')
 
-            # 修复空计数变量报错：默认赋值0
-            DUP_COUNT=0
-            RAW_DUP=$(grep "^${img_name}|" "$TMP_RECORD" | cut -d'|' -f2 | sort -u | wc -l)
-            if [[ -n "$RAW_DUP" ]]; then
-              DUP_COUNT=$RAW_DUP
-            fi
+            # 统计当前镜像名对应的不同命名空间数量
+            unique_ns=$(grep "^${img_name}|" "$TMP_MAP" | cut -d'|' -f2 | sort -u | wc -l)
             ns_prefix=""
-            if [ "$DUP_COUNT" -gt 1 ] && [ -n "$ns_part" ]; then
-              ns_prefix="${ns_part//\//_}_"
-            fi
+            echo "$unique_ns" | grep -v '^1$' >/dev/null && ns_prefix=$(echo "$ns_part" | sed 's/\//_/g' | sed 's/$/_/')
 
-            target_img="$ALIYUN_REGISTRY/$ALIYUN_NAME_SPACE/$platform_prefix$ns_prefix$img_short"
+            # 拼接目标镜像地址
+            target_img="${ALIYUN_REGISTRY}/${ALIYUN_NAME_SPACE}/${platform_prefix}${ns_prefix}${img_short}"
             echo "原始镜像: $pure_image"
             echo "目标镜像: $target_img"
 
+            # 拉取、打标、推送
             echo "执行拉取: docker pull $line"
             docker pull $line
-
             docker tag "$pure_image" "$target_img"
             echo "执行推送: docker push $target_img"
             docker push "$target_img"
 
+            # 清理本地镜像
             docker rmi "$target_img" || true
             docker rmi "$pure_image" || true
-
             docker system prune -f
             echo "当前磁盘使用:"
             df -hT
-          done < "${{ env.IMAGE_LIST_FILE }}"
+          done
 
-          rm -f "$TMP_RECORD"
+          # 清理临时文件、退出登录
+          rm -f "$TMP_MAP"
           docker logout "$ALIYUN_REGISTRY"
