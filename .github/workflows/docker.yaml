@@ -5,10 +5,14 @@ on:
     branches: [ main ]
 
 env:
+  # 阿里云仓库配置
   ALIYUN_REGISTRY: "${{ secrets.ALIYUN_REGISTRY }}"
   ALIYUN_NAME_SPACE: "${{ secrets.ALIYUN_NAME_SPACE }}"
   ALIYUN_REGISTRY_USER: "${{ secrets.ALIYUN_REGISTRY_USER }}"
   ALIYUN_REGISTRY_PASSWORD: "${{ secrets.ALIYUN_REGISTRY_PASSWORD }}"
+  # Docker Hub配置
+  DOCKER_HUB_USER: "${{ secrets.DOCKER_HUB_USER }}"
+  DOCKER_HUB_PWD: "${{ secrets.DOCKER_HUB_PWD }}"
   IMAGE_LIST_FILE: "images.txt"
 
 jobs:
@@ -50,14 +54,16 @@ jobs:
       - name: Sync images to Aliyun Registry
         run: |
           set -eo pipefail
-          # 关闭严格未定义变量检测，从根源规避空变量报错
           set +u
+
+          # ===================== 新增Docker Hub登录 =====================
+          echo "登录Docker Hub，解除匿名拉取限流"
+          echo "${DOCKER_HUB_PWD}" | docker login -u "${DOCKER_HUB_USER}" --password-stdin docker.io
 
           # 登录阿里云镜像仓库
           echo "登录阿里云镜像仓库: $ALIYUN_REGISTRY"
           echo "$ALIYUN_REGISTRY_PASSWORD" | docker login -u "$ALIYUN_REGISTRY_USER" --password-stdin "$ALIYUN_REGISTRY"
 
-          # 临时文件存储镜像名+命名空间映射
           TMP_MAP=$(mktemp)
           cat ${IMAGE_LIST_FILE} | while IFS= read -r raw_line || [ -n "$raw_line" ]; do
             line=$(echo "$raw_line" | xargs)
@@ -69,13 +75,12 @@ jobs:
             echo "${img_name}|${ns_part}" >> "$TMP_MAP"
           done
 
-          # 逐行处理镜像
           cat ${IMAGE_LIST_FILE} | while IFS= read -r raw_line || [ -n "$raw_line" ]; do
             line=$(echo "$raw_line" | xargs)
             echo "$line" | grep -E '^#|^$' >/dev/null && continue
             echo -e "\n==================== 开始处理镜像行: $line ===================="
 
-            # 提取平台参数
+            # 修复grep --参数报错，添加-e标识正则
             platform=$(echo "$line" | grep -oE -e '--platform[ =][^ ]+' | awk '{print $2}')
             platform_prefix=$(echo "$platform" | sed 's/\//_/g' | sed 's/$/_/')
 
@@ -84,24 +89,22 @@ jobs:
             img_name=$(echo "$img_short" | cut -d':' -f1)
             ns_part=$(echo "$pure_image" | sed -E 's/\/[^/]+$//')
 
-            # 统计当前镜像名对应的不同命名空间数量
             unique_ns=$(grep "^${img_name}|" "$TMP_MAP" | cut -d'|' -f2 | sort -u | wc -l)
             ns_prefix=""
             echo "$unique_ns" | grep -v '^1$' >/dev/null && ns_prefix=$(echo "$ns_part" | sed 's/\//_/g' | sed 's/$/_/')
 
-            # 拼接目标镜像地址
             target_img="${ALIYUN_REGISTRY}/${ALIYUN_NAME_SPACE}/${platform_prefix}${ns_prefix}${img_short}"
             echo "原始镜像: $pure_image"
             echo "目标镜像: $target_img"
 
-            # 拉取、打标、推送
+            # 增加拉取失败完整错误输出
             echo "执行拉取: docker pull $line"
-            docker pull $line
+            docker pull $line || { echo "ERROR: 镜像拉取失败，镜像地址: $line"; exit 1; }
+
             docker tag "$pure_image" "$target_img"
             echo "执行推送: docker push $target_img"
-            docker push "$target_img"
+            docker push "$target_img" || { echo "ERROR: 镜像推送失败，目标地址: $target_img"; exit 1; }
 
-            # 清理本地镜像
             docker rmi "$target_img" || true
             docker rmi "$pure_image" || true
             docker system prune -f
@@ -109,6 +112,7 @@ jobs:
             df -hT
           done
 
-          # 清理临时文件、退出登录
           rm -f "$TMP_MAP"
+          # 登出两个仓库
+          docker logout docker.io
           docker logout "$ALIYUN_REGISTRY"
