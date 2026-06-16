@@ -76,7 +76,7 @@ jobs:
             echo -e "\n==================== 开始处理镜像行: $line ===================="
 
             # 提取平台参数
-            platform=$(echo "$line" | grep -oE '--platform[ =][^ ]+' | awk '{print $2}')
+            platform=$(echo "$line" | grep -oE -e '--platform[ =][^ ]+' | awk '{print $2}')
             platform_prefix=$(echo "$platform" | sed 's/\//_/g' | sed 's/$/_/')
 
             pure_image=$(echo "$line" | awk '{print $NF}' | cut -d'@' -f1)
